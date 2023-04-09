@@ -35,7 +35,12 @@ logging.basicConfig(
 )
 
 rdm = {}  # 用来保存帮用户生成的随机数。chat_id:98，类似这样
-
+#下面建立要给tonclient全局变量与ton沟通
+cfg_url = setting.tonclient_url
+cfg = requests.get(cfg_url).json()
+keystore_dir = '.keystore'
+Path(keystore_dir).mkdir(parents=True, exist_ok=True)
+client = TonlibClient(ls_index=0,config=cfg,keystore=keystore_dir)
 
 def getindex():
 
@@ -63,21 +68,12 @@ def getindex():
 
 async def get_balance(ACCOUNT) -> int:
 
-    # 从toncenter获得地址的balance
-    toncenter_conn = http.client.HTTPSConnection("testnet.toncenter.com")
-    toncenter_headers = {
-        'accept': "application/json",
-        'X-API-Key': "1e66fdeb4e2f7376c0a107cb99c6f506890dd4d607795f2d18be08c8438f7189"
-    }
-    toncenter_conn.request(
-        "GET", f"/api/v2/getAddressBalance?address={ACCOUNT}", headers=toncenter_headers)
-    toncenter_res = toncenter_conn.getresponse()
-    toncenter_data = toncenter_res.read()
-    toncenter_result = json.loads(toncenter_data.decode("utf-8"))
-    balance = int(int(toncenter_result['result']))
-
-    return balance
-
+    try:
+        status = await client.raw_get_account_state(ACCOUNT)
+        balance = status['balance']
+        return int(balance)
+    except Exception as err:
+        logging.info("get_balance出错了，%s",err)
 
 async def wallet_init(transfer_address: Address, bonus: int):
 
@@ -86,19 +82,19 @@ async def wallet_init(transfer_address: Address, bonus: int):
         mnemonics=wallet_mnemonics, version=WalletVersionEnum.v3r2, workchain=0)
     address_wallet = wallet.address.to_string(True, True, True)
 
-    url = setting.tonclient_url
-    config = requests.get(url).json()
-    # create keystore directory for tonlib
-    keystore_dir = '/tmp/ton_keystore'
-    Path(keystore_dir).mkdir(parents=True, exist_ok=True)
-    client = TonlibClient(0, config=config, keystore=keystore_dir)
-    # 初始化tonlibclient
-    try:
-        await client.init()
-    except Exception as err:
-        logging.info("钱包初始化失败")
-        return err
-    # 获得钱包目前的序列
+    # url = setting.tonclient_url
+    # config = requests.get(url).json()
+    # # create keystore directory for tonlib
+    # keystore_dir = '.keystore'
+    # Path(keystore_dir).mkdir(parents=True, exist_ok=True)
+    # client = TonlibClient(0, config=config, keystore=keystore_dir)
+    # # 初始化tonlibclient
+    # try:
+    #     await client.init()
+    # except Exception as err:
+    #     logging.info("钱包初始化失败")
+    #     return err
+    # # 获得钱包目前的序列
     try:
         raw_seqno = await client.raw_run_method(address=address_wallet, method='seqno', stack_data=[])
         seqno = int(raw_seqno['stack'][0][1], 16)
@@ -118,7 +114,7 @@ async def wallet_init(transfer_address: Address, bonus: int):
         logging.info("转账时出错了")
         return err
 
-    client.close()
+    # client.close()
     return
 
 
@@ -174,7 +170,7 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
                         for row in rows:
                             total_in += row[1]
                         ACCOUNT = setting.ACCOUNT
-                        wallet_bls = get_balance(ACCOUNT)
+                        wallet_bls = await get_balance(ACCOUNT)
                         # 先算每一个ton赢多少，防止不同的人付款不一致
                         each_coin_win = round(wallet_bls*0.9/total_in, 0)
                         for row in rows:
@@ -210,6 +206,7 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info('start')
     tg_name = update.message.from_user.first_name
+    balance = await get_balance(setting.ACCOUNT)
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"""你好,{tg_name},欢迎来到阳光彩票！\n
 
 中国福利彩票的黑幕有目共睹，本程序想借助虚拟币和智能合约，建立一个简单公正的彩票应用。
@@ -219,6 +216,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 目前该程序运行在Ton的Testnet上，你可以点击<a href="https://t.me/testgiver_ton_bot">这里</a>免费获得测试TON币。\n
 该游戏的Ton地址：<a href="https://testnet.tonscan.org/address/EQAd3b5PyiksK5Uizi8azpd4fw6IJ8HDrIUEcsyAVXjG0uV8">EQAd3b5PyiksK5Uizi8azpd4fw6IJ8HDrIUEcsyAVXjG0uV8</a>\n
 你可以点击上面链接来查看奖金池和进出资金状况。
+
+目前该账户余额：{balance}
 
 输入 /start 查看此说明。
 输入 /new   购买彩票。
@@ -476,6 +475,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     return ConversationHandler.END
 
+async def tonclient_init():
+    try:
+        await client.init()
+    except:
+        logging.info("初始化tonclient失败")
+
 if __name__ == "__main__":
 
     if not os.path.exists('./data.db'):
@@ -500,8 +505,8 @@ if __name__ == "__main__":
             to_amount int);
         ''')
         conn.commit()
-
-    # 建立一个每天下午四点运行一次的程序。
+    #初始化一个tonclient出来
+    asyncio.get_event_loop().run_until_complete(tonclient_init())
     # 建立telegram的bot并设置TOKEN
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start),
@@ -516,3 +521,5 @@ if __name__ == "__main__":
     application = Application.builder().token(setting.TOKEN).build()
     application.add_handler(conv_handler)
     application.run_polling(2)
+    #当结束时关闭tonclient的连接
+    client.close()
