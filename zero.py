@@ -42,29 +42,19 @@ keystore_dir = '.keystore'
 Path(keystore_dir).mkdir(parents=True, exist_ok=True)
 client = TonlibClient(ls_index=0,config=cfg,keystore=keystore_dir)
 
-def getindex():
+def get_index():
 
     # 从rapidapi.com获得上证股票信息
-    rapidapi_conn = http.client.HTTPSConnection(
-        "apidojo-yahoo-finance-v1.p.rapidapi.com")
-    rapidapi_headers = {
-        'X-RapidAPI-Key': setting.RapidAPI_Key,
-        'X-RapidAPI-Host': "apidojo-yahoo-finance-v1.p.rapidapi.com"
-    }
-    rapidapi_conn.request(
-        "GET", "/market/v2/get-quotes?region=US&symbols=000001.SS", headers=rapidapi_headers)
-    rapidapi_res = rapidapi_conn.getresponse()
-    rapidapi_data = rapidapi_res.read()
-    result = json.loads(rapidapi_data.decode("utf-8"))
+    headers = {'X-RapidAPI-Key': setting.RapidAPI_Key}
+    url="https://apidojo-yahoo-finance-v1.p.rapidapi.com/market/v2/get-quotes?region=US&symbols=000001.SS"
+    res = requests.get(url,headers=headers)
+    result = res.json()
     # regularMarketTime是以秒计算的累计数，
     # regularMarketPrice是这个时间段的价格
     regularMarketTime = result['quoteResponse']['result'][0]['regularMarketTime']
     regularMarketPrice = result['quoteResponse']['result'][0]['regularMarketPrice']
-
     rdt = datetime.fromtimestamp(regularMarketTime)
-
     return rdt, regularMarketPrice
-
 
 async def get_balance(ACCOUNT) -> int:
 
@@ -82,19 +72,6 @@ async def wallet_init(transfer_address: Address, bonus: int):
         mnemonics=wallet_mnemonics, version=WalletVersionEnum.v3r2, workchain=0)
     address_wallet = wallet.address.to_string(True, True, True)
 
-    # url = setting.tonclient_url
-    # config = requests.get(url).json()
-    # # create keystore directory for tonlib
-    # keystore_dir = '.keystore'
-    # Path(keystore_dir).mkdir(parents=True, exist_ok=True)
-    # client = TonlibClient(0, config=config, keystore=keystore_dir)
-    # # 初始化tonlibclient
-    # try:
-    #     await client.init()
-    # except Exception as err:
-    #     logging.info("钱包初始化失败")
-    #     return err
-    # # 获得钱包目前的序列
     try:
         raw_seqno = await client.raw_run_method(address=address_wallet, method='seqno', stack_data=[])
         seqno = int(raw_seqno['stack'][0][1], 16)
@@ -142,9 +119,9 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
     db_conn = sqlite3.Connection("data.db")
     issue = current_time.strftime("%Y%m%d")
     # 虽然此任务不会在周末运行，以防万一，再检查一遍
-    if current_time.weekday() != 5 or current_time.weekday() != 6:  # 不是周末
+    if current_time.weekday() != 5 and current_time.weekday() != 6:  # 不是周末
         if current_time.hour > 10:  # 交易时间，检查今天有没有开市
-            market_time, market_value = getindex()
+            market_time, market_value = get_index()
             if current_time.day == market_time.day:  # 如果拿到的是当天的报价证明开盘了
                 if current_time.hour >= 16:  # 而且现在已经下午四点以后了
                     luck_num = int(round(market_value*100 %
@@ -184,11 +161,11 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
                         cur = db_conn.execute(find_winners)
                         winners = cur.fetchall()
                         for winner in winners:
-                            good_news = f"{winner[0]},你好！ 恭喜你，你购买的{winner[1]}期彩票幸运号码是{winner[2]},你中奖了！奖金{winner[3]},你可以输入 /h 来查看最近的购买历史，然后输入你要领奖的地址。谢谢！"
+                            good_news = f"{winner[0]},你好！ 恭喜你，你购买的{winner[1]}期彩票幸运号码是{winner[2]},你中奖了！奖金{winner[3]},你可以点击 /h 来查看最近的购买历史，然后输入你要领奖的地址。谢谢！"
                             await context.bot.send_message(winner[4], good_news)
 
             else:  # 如果拿到的报价不是当天的，证明当天没开盘
-                update_query = f"insert stock(issue,open_or_not) values({issue},False)"
+                update_query = f"insert into stock(issue,open_or_not) values('{issue}',0)"
                 db_conn.execute(update_query)
                 db_conn.commit()
                 # 然后把所有买了当天期数的改到下一天去
@@ -219,10 +196,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 目前该账户余额：{balance}
 
-输入 /start 查看此说明。
-输入 /new   购买彩票。
-输入 /end   结束会话
-输入 /his   兑奖""",
+点击 /start 查看此说明。
+点击 /new   购买彩票。
+点击 /his   兑奖""",
                                    parse_mode="HTML", disable_web_page_preview=True)
     # 下面创建一个每天下午四点运行的
     current_jobs = context.job_queue.get_jobs_by_name("check_index")
@@ -252,6 +228,8 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             recent_order_msg += f"期数：{row[0]} ,投注数字 {row[1]}，"
             if row[2] == None:  # row[2]付款金额
                 recent_order_msg += "未付款，"
+            else:
+                recent_order_msg += "已付款，"
             if row[3] == None:  # row[3]，开奖数字
                 recent_order_msg += "未开奖，"
             else:
@@ -276,10 +254,15 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bonus = float(rows[0])
         if bonus != 0:
             recent_order_msg += f"发现你有{bonus/1000000000} TON 的奖金没有领取。\n，请输入兑奖地址：\n"
-
+        
         await update.message.reply_text(recent_order_msg)
-
-    return 2
+        if bonus == 0:   #如果没有奖金要发，发完消息就结束对话
+            return ConversationHandler.END
+        else:
+            return 2
+    else:   #若没有发现购买彩票记录
+        await update.message.reply_text("没有查到你购买彩票的记录，点击 /new 来买一注吧。")
+        return ConversationHandler.END
 
 
 async def create_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -295,7 +278,7 @@ async def create_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     rdm[chat_id] = new_rdm
 
     # 回复员工对话
-    await update.message.reply_text(f"""系统随机帮你选了个幸运数字: {new_rdm} ,输入 ok 来接受这个随机数。或者直接输入其他你喜欢的数字，必须是0-99之间。或者输入 /end 来结束对话。""", parse_mode="HTML", disable_web_page_preview=True)
+    await update.message.reply_text(f"""系统随机帮你选了个幸运数字: {new_rdm} \n回复 /ok 来接受这个随机数。\n或直接会复发其他你喜欢的数字(0-99)。\n 可以点击 /end 来结束对话。""", parse_mode="HTML", disable_web_page_preview=True)
     return 1
 
 
@@ -324,21 +307,11 @@ async def check_payment(context: ContextTypes.DEFAULT_TYPE) -> None:
         db_conn.execute(delete_order)
         db_conn.commit()
         # 告诉用户由于15分钟内未收到付款，订单已经取消了
-        await context.bot.send_message(chat_id, f"订单{order_id},没有在15分钟内收到付款，订单已删除，若需求，可以输入 / new 请重新购买！")
+        await context.bot.send_message(chat_id, f"订单{order_id},没有在15分钟内收到付款，订单已删除，若需求，可以点击 /new 请重新购买！")
         return
 
-    toncenter_conn = http.client.HTTPSConnection(
-        "testnet.toncenter.com")
-    headers = {
-        'accept': "application/json",
-        'X-API-Key': f"{setting.toncenter_key}"
-    }
-    toncenter_conn.request(
-        "GET", f"/api/v2/getTransactions?address={setting.ACCOUNT}&limit=10&to_lt=0&archival=false", headers=headers)
-    toncenter_res = toncenter_conn.getresponse()
-    toncenter_data = toncenter_res.read()
-    trans = json.loads(toncenter_data.decode("utf-8"))
-    for tran in trans['result']:
+    trans = await client.get_transactions(setting.ACCOUNT,to_transaction_lt=0,limit=10)
+    for tran in trans:
         if tran['in_msg']['message'] == str_msg:
             logging.info("已经收到付款")
             from_address = tran['in_msg']['source']
@@ -363,7 +336,11 @@ async def create_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     tg_name = update.message.from_user.first_name
     chat_id = update.message.chat_id
     msg = str(update.message.text)
-    if msg == 'ok':
+    if msg == '/end':
+        await update.message.reply_text("好的，已取消，欢迎点击 /new 重新让系统帮你选一个")
+        return  ConversationHandler.END
+    
+    if msg == '/ok':
         luck_num = rdm[chat_id]
     else:
         if msg.isdigit():
@@ -373,7 +350,7 @@ async def create_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             else:
                 await update.message.reply_text("请输入0-99之间的数字")
         else:
-            await update.message.reply_text("你的输入有误，若接受随机数，请输入ok，否则请自己输入一个0-99之间的幸运数字。或输入 /end 来结束会话。")
+            await update.message.reply_text(f"你的输入有误。\n 若接受随机数{rdm[chat_id]}请点击 /ok \n否则请自己输入一个0-99之间的数字\n或点击 /end 来结束会话。")
             return
     # 创建订单到数据库
     db_conn = sqlite3.connect('data.db')
@@ -384,7 +361,7 @@ async def create_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if current_date.weekday() == 5:
         next_issue = current_date+timedelta(days=2)  # 若是周六就是下周一
     if current_date.weekday() == 6:
-        next_issue = current_date+timedelta(day=1)  # 若今天周日，就是下周一
+        next_issue = current_date+timedelta(days=1)  # 若今天周日，就是下周一
     if current_date.weekday() == 4:  # 若是周五
         if current_date.hour > 15:   # 若已经下午三点了，那只能买下周一
             next_issue = current_date + timedelta(days=3)  # 那就买下一期
@@ -404,15 +381,15 @@ async def create_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                               next_issue_str, chat_id, tg_name, luck_num))
     db_conn.commit()
     order_id = cur.lastrowid
+    logging.info("新订单已创建%s",order_id)
     str_dt = next_issue.strftime("%Y%m%d")
     str_msg = f"{tg_name}-{luck_num}-{str_dt}"
     pay_link = f"ton://transfer/{setting.ACCOUNT}?amount=1000000000&text={str_msg}"
     cpt = f'''付款地址：<a href="{pay_link}">{setting.ACCOUNT}</a>\n幸运数字：{luck_num}\n开奖时间：{next_issue.strftime("%Y-%m-%d")} 16:00'''
     # 把付款信息发送给用户
     await update.message.reply_text(cpt, parse_mode=constants.ParseMode.HTML)
-
+    
     # 下面检查是否收到款,每30秒检查一次付款，若收到了付款就发送消息
-
     context.job_queue.run_repeating(
         check_payment, 30, 0, 1000, data=order_id, name=str_msg, chat_id=chat_id)
 
@@ -424,6 +401,11 @@ async def pay_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_name = update.message.from_user.first_name
 
     address_from_msg = update.message.text
+    
+    if address_from_msg == '/end':
+        await update.message.reply_text("好的。已结束会话，可以继续点击 /his 重新开始。")
+        return  ConversationHandler.END
+    
     logging.info("检查钱包的正确性")
     # 我们来检查是否地址是否有效
     try:
@@ -461,7 +443,7 @@ async def pay_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             db_conn.commit()
             await update.message.reply_text("转账应该成功了，你检查一下。")
         else:
-            await update.message.reply_text("转账失败了，你输入 /his 重新试一下。")
+            await update.message.reply_text("转账失败了，你点击 /his 重新试一下。")
         task.join()
         p_pip.close()
 
@@ -472,7 +454,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logging.info("会话结束")
     await update.message.reply_text(
         "好的，再见！\n")
-
     return ConversationHandler.END
 
 async def tonclient_init():
@@ -505,6 +486,21 @@ if __name__ == "__main__":
             to_amount int);
         ''')
         conn.commit()
+        #下面建立stock数据库
+        conn.execute('''
+        CREATE TABLE "stock" (
+    	"id"	INTEGER NOT NULL UNIQUE,
+	    "issue"	TEXT,
+	    "open_or_not"	BLOB,
+	    "close_value"	NUMERIC,
+	    "luck_num"	INTEGER,
+	    "buyer"	INTEGER,
+	    "in_amount"	INTEGER,
+	    "winners"	INTEGER,
+	    "total_bonus"	INTEGER,
+	    PRIMARY KEY("id" AUTOINCREMENT)
+        )''')
+        conn.commit()
     #初始化一个tonclient出来
     asyncio.get_event_loop().run_until_complete(tonclient_init())
     # 建立telegram的bot并设置TOKEN
@@ -513,8 +509,8 @@ if __name__ == "__main__":
                       CommandHandler(['his', 'history'], history),
                       CommandHandler('new', create_order)],
         states={
-            1: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_invoice)],
-            2: [MessageHandler(filters.TEXT & ~filters.COMMAND, pay_bonus)],
+            1: [MessageHandler(filters.ALL, create_invoice)],
+            2: [MessageHandler(filters.ALL, pay_bonus)],
         },
         fallbacks=[CommandHandler(["end", 'cancel'], cancel)]
     )
@@ -522,4 +518,6 @@ if __name__ == "__main__":
     application.add_handler(conv_handler)
     application.run_polling(2)
     #当结束时关闭tonclient的连接
-    client.close()
+    asyncio.run(application.job_queue.stop())
+    asyncio.run(client.close())
+    
