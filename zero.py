@@ -176,7 +176,7 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
                     cur=db_conn.execute(unpaid_query)
                     unpaid = int(cur.fetchone()[0])
                     #先看看奖金够不够
-                    balance = get_balance(setting.ACCOUNT)
+                    balance = await get_balance(setting.ACCOUNT)
                     balance = balance - unpaid
                     logging.info("已更新中奖号码到orders表格")
                     select_buyers = f"select order_id,luck_num,open_num from orders where paid is True and issue='{issue}'"
@@ -256,7 +256,7 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
 购买时间：{order_dt}
 中奖期数：{issue}
 竞猜数字：<b>{luck_num}</b>
-上证闭市：{market_str}
+上证收盘：{market_str}
 开奖数字：<b>{open_num}</b>
 中奖等级：{level[win]}
 中奖金额：{to_amount/1_000_000_000}TON
@@ -268,7 +268,7 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
 购买时间：{order_dt}
 彩票期数：{issue}
 竞猜数字：<s>{luck_num}</s>
-上证闭市：{market_str}
+上证收盘：{market_str}
 开奖数字：<b>{open_num}</b>
 若需要继续购买下一期，请点击 /new"""
                         await context.bot.send_message(buyer[1], news, parse_mode='HTML')
@@ -592,7 +592,7 @@ async def show_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"""
 订单编号: {last[0]}
 中奖期数：{last[1]}
-当日闭市：{last[2]} <b>[{last[3]}]</b>
+当日收盘：{last[2]} <b>[{last[3]}]</b>
 中奖用户: {last[4]}
 竞猜数字: {last[5]}
 竞猜凭证: <a href='https://testnet.tonscan.org/tx/{last[6]}'>{last[6]}</a>
