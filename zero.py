@@ -10,6 +10,7 @@ import asyncio
 import re
 import decimal
 import math
+import json
 
 from telegram import Update, constants
 from telegram.ext import (
@@ -124,17 +125,13 @@ class _issue:
 
 def get_index():
 
-    # 从rapidapi.com获得上证股票信息
-    headers = {'X-RapidAPI-Key': setting.RapidAPI_Key}
-    url = "https://apidojo-yahoo-finance-v1.p.rapidapi.com/market/v2/get-quotes?region=US&symbols=000001.SS"
-    res = requests.get(url, headers=headers)
-    result = res.json()
-    # regularMarketTime是以秒计算的累计数，
-    # regularMarketPrice是这个时间段的价格
-    regularMarketTime = result['quoteResponse']['result'][0]['regularMarketTime']
-    regularMarketPrice = result['quoteResponse']['result'][0]['regularMarketPrice']
-    rdt = datetime.fromtimestamp(regularMarketTime)
-    return rdt, regularMarketPrice
+    url = 'http://yunhq.sse.com.cn:32041/v1/sh1/snap/000001'
+    response = requests.get(url)
+    data_dict = json.loads(response.text)
+    dt = str(data_dict['date'])+str(data_dict['time'])
+    rdt = datetime.strptime(dt,'%Y%m%d%H%M%S')
+    regularMarketPrice = str(data_dict['snap'][5])
+    return rdt,regularMarketPrice
 
 
 async def get_balance(ACCOUNT) -> int:
@@ -153,8 +150,9 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
     current_time=dt.dt
     if dt.open:
         issue = dt.str_dt
-        market_time, market_str = get_index()
-        if current_time.hour >= 16:  # 而且现在已经下午四点以后了
+        current = current.time.time()
+        afternoon_time = time(15,30,30)
+        if current > afternoon_time:  # 而且现在已经超过下午三点半了
                     # 加一个判断，如果已经开过奖了，就直接跳过
                     check_query = "select open_index from orders where issue='{issue}'"
                     cur = db_conn.execute(check_query)
@@ -162,6 +160,10 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
                     if len(check_index)>0:
                         logging.info("已开奖，但中奖函数被重复启动")
                         return
+                    #下面获取上证指数数据
+                    market_time, market_str = get_index()
+                    if market_time.time()<afternoon_time:
+                        logging.info("获得的index的时间不是三点半以后的，开奖失败")
                     market_num = decimal.Decimal(market_str)
                     open_num = market_num - (market_num // 10 * 10)
                     str_open_num = '{:.4f}'.format(open_num)
@@ -306,7 +308,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {msg}
 
 每个工作日下午三点停止竞猜。
-下午四点开奖。
+下午三点半准时开奖。
 三点以后购买的是第二天的彩票。
 
 查看此消息，点击 /start 
@@ -329,7 +331,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 先检查是不是已经创建了这个job，如果没有那就创建，否则直接跳过
     if not current_jobs:
         chat_id = update.message.chat_id
-        t = time(16, 0, 0, tzinfo=timezone("Asia/Shanghai"))
+        t = time(15,30,30, tzinfo=timezone("Asia/Shanghai"))
         job = context.job_queue.run_daily(choose_winner, t, days=(
             1, 2, 3, 4, 5), chat_id=chat_id, name="check_index")
         logging.info("%s每日任务已创建,下次运行时间: %s", tg_name, job.next_t)
@@ -522,7 +524,11 @@ async def check_payment(context: ContextTypes.DEFAULT_TYPE) -> None:
 备注信息：<code>{str_msg}</code>
 付款凭证：<a href='https://testnet.tonscan.org/tx/{pay_hash}'>{pay_hash}</a>
 """, parse_mode="HTML", disable_web_page_preview=True)
-
+            
+            #找到一个就可以了，然后跳出循坏
+            break
+    
+    return
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_name = update.message.from_user.first_name
