@@ -150,7 +150,7 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
     current_time=dt.dt
     if dt.open:
         issue = dt.str_dt
-        current = current.time.time()
+        current = datetime.now().time()
         afternoon_time = time(15,30,30)
         if current > afternoon_time:  # 而且现在已经超过下午三点半了
                     # 加一个判断，如果已经开过奖了，就直接跳过
@@ -174,7 +174,7 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
                     #获得尚未兑换的奖金总额
                     unpaid_query = "select sum(to_amount) from orders where to_address is NULL"
                     cur=db_conn.execute(unpaid_query)
-                    unpaid = int(cur.fetchone[0])
+                    unpaid = int(cur.fetchone()[0])
                     #先看看奖金够不够
                     balance = get_balance(setting.ACCOUNT)
                     balance = balance - unpaid
