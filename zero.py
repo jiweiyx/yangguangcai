@@ -38,12 +38,12 @@ logging.basicConfig(
 rdm = {}  # 用来保存帮用户生成的随机数。chat_id:98，类似这样
 last_order={}  #用来存储上一个订单的时间，防止用户批量下单而不付款，导致服务器检查工作负荷过高
 level = {
-    1: "五等奖",
-    2: "四等奖",
-    3: "三等奖",
-    4: "二等奖",
-    5: "一等奖"
+    1: "四等奖",
+    2: "三等奖",
+    3: "二等奖",
+    4: "一等奖"
 }
+prize={}  #用来保存此用户有多少奖金还没有领取
 
 # 下面建立要给tonclient全局变量与ton沟通
 cfg_url = setting.tonclient_url
@@ -175,9 +175,11 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
                     unpaid_query = "select sum(to_amount) from orders where to_address is NULL"
                     cur=db_conn.execute(unpaid_query)
                     unpaid = int(cur.fetchone()[0])
+                    logging.info("开奖未付奖金%s",unpaid)
                     #先看看奖金够不够
                     balance = await get_balance(setting.ACCOUNT)
                     balance = balance - unpaid
+                    logging.info("扣除未付奖金以后剩余%s",balance)
                     logging.info("已更新中奖号码到orders表格")
                     select_buyers = f"select order_id,luck_num,open_num from orders where paid is True and issue='{issue}'"
                     cur = db_conn.execute(select_buyers)
@@ -187,11 +189,9 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
                         order_id = buyer[0]
                         luck_num = decimal.Decimal(buyer[1])
                         open_num = decimal.Decimal(buyer[2])
-                        win = 0  # 几等奖
                         right = 0  # 小数点后猜中的个数
                         to_amount = 0
                         if math.floor(luck_num) == math.floor(open_num):  # 个位相等
-                            win = 1
                             if math.floor(luck_num*10) % 10 == math.floor(open_num*10) % 10:  # 小数点后一位
                                 right += 1
                             # 小数点第二位相等
@@ -203,31 +203,18 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
                                 # 第四位相等
                             if math.floor(luck_num*10000) % 10 == math.floor(open_num*10000) % 10:
                                 right += 1
-                        if win == 1:  # 若猜中个位数
+                        if right >= 1:  # 个位必须猜对
                             
-                            if right == 0 and balance > 5*1_000_000_000:
+                            if right == 1:  #当小数猜对一个
                                 to_amount = 5*1_000_000_000
+                            if right == 2:  #当小数猜对两个
+                                to_amount = 50*1_000_000_000
+                            if right == 3:
+                                to_amount = 500*1_000_000_000 
+                            if right == 4:
+                                to_amount = 5000*1_000_000_000
 
-                            if right == 1 and balance > 20*10_000_000_000:
-                                to_amount = 20*1_000_000_000
-                                win += 1
-                                balance = balance - to_amount
-
-                            if right == 2 and balance > 100*1_000_000_000:
-                                to_amount = 100*1_000_000_000
-                                win += 1
-                                balance = balance  - to_amount
-
-                            if right == 3 and balance > 1500*1_000_000_000:
-                                to_amount = 1500*1_000_000_000 
-                                win += 1
-                                balance = balance - to_amount
-
-                            if right == 4 and balance > 5000*1_000_000_000:
-                                to_amount = 50000*1_000_000_000
-                                win += 1
-                                
-                        update_win = f"update orders set win={win},to_amount={to_amount} where order_id={order_id}"
+                        update_win = f"update orders set win={right},to_amount={to_amount} where order_id={order_id}"
                         db_conn.execute(update_win)
 
                     db_conn.commit()
@@ -277,23 +264,13 @@ async def choose_winner(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_name = update.message.from_user.first_name
+    chat_id = update.message.chat_id
     logging.info('%s用户启动了start函数', tg_name)
     try:
         balance = await get_balance(setting.ACCOUNT)
     except:
         balance = 0
         logging.info("获取钱包余额失败，默认回复0")
-    msg = ""
-    if balance > 5_000_000_000:
-        msg = "猜中个位，奖金 5 TON。\n"
-    if balance > 20_000_000_000:
-        msg += "猜中个位，并且猜中一个小数位，奖金 20 TON。\n"
-    if balance > 100_000_000_000:
-        msg += "猜中个位，并且猜中两个小数位，奖金 100 TON。\n"
-    if balance > 1_500_000_000_000:
-        msg += "猜中个位，并且猜中三个小数位，奖金 1,500 TON,价值 5000 美金。\n"
-    if balance > 50_000_000_000_000:
-        msg += "全部都猜对，获得终极大奖，奖金 50,000 TON。价值十万美金。"
     await update.message.reply_html(text=f"""欢迎来到上证彩票！\n
 
 基于智能合约的公正彩票应用。
@@ -301,11 +278,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 合约地址：
 <code>{setting.ACCOUNT}</code>
 
-当前奖池余额：{balance/1_000_000_000}TON
+当前奖池余额：{round(balance/1_000_000_000,2)}TON
 
 中奖规则类似双色球:
 每注 1 TON
-{msg}
+
+猜中个位 + 一个小数位，奖金    5 TON。
+猜中个位 + 两个小数位，奖金   50 TON。
+猜中个位 + 三个小数位，奖金  500 TON。
+猜中个位 + 四个小数位，奖金 5000 TON。
 
 每个工作日下午三点停止竞猜。
 下午三点半准时开奖。
@@ -316,26 +297,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 购买上证彩，点击 /new   
 查询和兑奖，点击 /his   
 
-
 目前程序运行在Ton的Testnet上, 有免费的测试币在<a href="https://t.me/testgiver_ton_bot">这里</a>领。 """,
                                    disable_web_page_preview=True)
     # 检查一下多少金额未兑奖，这个人有多少奖金未兑换
-    check_bonus = "select sum(to_amount) from orders where to_address is null"
-    cur = db_conn.execute(check_bonus)
-    row = cur.fetchone()
-    bonus = int(row[0])
-    if row[0] != 0:
-        await context.bot.sendMessage(chat_id=update.effective_chat.id, text=f"发现你有{bonus/1_000_000_000}Ton奖金还没有领取，请点击 /his 来查看和领取。")
-    # 下面创建一个每天下午四点运行的
-    current_jobs = context.job_queue.get_jobs_by_name("check_index")
-    # 先检查是不是已经创建了这个job，如果没有那就创建，否则直接跳过
-    if not current_jobs:
-        chat_id = update.message.chat_id
-        t = time(15,30,30, tzinfo=timezone("Asia/Shanghai"))
-        job = context.job_queue.run_daily(choose_winner, t, days=(
-            1, 2, 3, 4, 5), chat_id=chat_id, name="check_index")
-        logging.info("%s每日任务已创建,下次运行时间: %s", tg_name, job.next_t)
-
+    
+    if chat_id not in prize:
+        check_bonus = f"select sum(to_amount) from orders where chat_id={chat_id} and to_address is null"
+        cur = db_conn.execute(check_bonus)
+        row = cur.fetchone()
+        bonus = int(row[0])
+        prize[chat_id]=row[0]
+    
+    if prize[chat_id]>0:
+        await context.bot.sendMessage(chat_id=update.effective_chat.id, text=f"发现你有{prize[chat_id]/1_000_000_000}Ton奖金还没有领取，请点击 /his 来查看和领取。")
+            
     return
 
 
@@ -348,7 +323,7 @@ async def create_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         last = last_order[chat_id]
         duration = dt.timestamp()-last
         if duration <300:   #如果上一个订单到现在还不到5分钟
-            await update.message.reply_text(f"为防止用户频繁下单不付款浪费资源，所以两订单时间间隔需要超过5分钟。建议你{int(300-duration)}秒以后再下单。上一个订单付款完成后将解除限制。")
+            await update.message.reply_text(f"两订单时间间隔需要超过5分钟。\n建议你{int(300-duration)}秒以后再下单。\n上一个订单付款完成后将解除限制。")
             return ConversationHandler.END
     
     logging.info('新建订单')
@@ -360,10 +335,14 @@ async def create_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     rdm[chat_id] = str_rdm
     # 回复员工对话
     await update.message.reply_text(f"""
+
 机选:       <b>{str_rdm}</b>
-同意:       点击 /ok
+
+同意:       点击    /ok
+
 自选:       类似0.0000格式回复此消息
-结束会话:   点击 /end """, parse_mode="HTML")
+
+结束:       点击    /end """, parse_mode="HTML")
     return 1
 
 
@@ -410,25 +389,28 @@ async def create_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logging.info("新订单已创建%s", order_id)
     str_msg = f"{order_id}-{tg_name}-{luck_num}-{next_issue_str}"
     pay_link = f"ton://transfer/{setting.ACCOUNT}?amount=1000000000&text={str_msg}"
-    cpt = f'''订单编号:  {order_id}
-幸运数字：  <B>{luck_num}</B>
-备注信息：  <code>{str_msg}</code>
-开奖时间：  {next_issue_str} 16:00
+    cpt = f'''
+订单编号:   {order_id}
+投注期数:   {next_issue_str}
+投注数字:   <B>{luck_num}</B>
+备注信息:   <code>{str_msg}</code>
+开奖时间:   {next_issue_str} 16:00
 ------------------------------
-请付款至以下地址
+付款链接：
+
 <a href="{pay_link}">{setting.ACCOUNT}</a>
-付款时注意检查备注信息的准确性。
+若手工输入，请注意检查备注信息。
 '''
     # 把付款信息发送给用户
-    await update.message.reply_text(cpt, parse_mode=constants.ParseMode.HTML)
+    await update.message.reply_text(cpt, parse_mode="HTML")
 
     #将创建订单的时间存起来，用来检查间隔
     n = datetime.now()
     last_order[chat_id]=n.timestamp()
 
-    # 下面检查是否收到款,每30秒检查一次付款，若收到了付款就发送消息
+    # 下面检查是否收到款,每10秒检查一次付款，若收到了付款就发送消息
     context.job_queue.run_repeating(
-        check_payment, 30, 0, 1000, data=order_id, name=str_msg, chat_id=chat_id)
+        check_payment, 15, 0, 1000, data=order_id, name=str_msg, chat_id=chat_id)
 
     return ConversationHandler.END
 
@@ -459,7 +441,7 @@ async def check_payment(context: ContextTypes.DEFAULT_TYPE) -> None:
         await context.bot.send_message(chat_id, f"订单{order_id},没有在15分钟内收到付款，订单已删除，你可以点击 /new 请重新购买！")
         return
 
-    trans = await client.get_transactions(setting.ACCOUNT, to_transaction_lt=0, limit=10)
+    trans = await client.get_transactions(setting.ACCOUNT, to_transaction_lt=0, limit=5)
     for tran in trans:
         if tran['in_msg']['message'] == str_msg:
             logging.info("已经收到付款")
@@ -517,12 +499,18 @@ async def check_payment(context: ContextTypes.DEFAULT_TYPE) -> None:
             if chat_id in last_order:
                 del last_order[chat_id]
             # 然后给用户发个消息，告诉他已收到款
-            await context.bot.send_message(chat_id, f"""订单{order_id}已收到付款。
-付款地址：
-<a href='https://testnet.tonscan.org/address/{from_address}'>{from_address}</a>
+            await context.bot.send_message(chat_id, f"""
+已收到你的付款。信息如下：
+--------------------------
+订单编号：  {order_id}
 付款金额：{int(pay_amount)/1000000000} TON
 备注信息：<code>{str_msg}</code>
-付款凭证：<a href='https://testnet.tonscan.org/tx/{pay_hash}'>{pay_hash}</a>
+
+付款地址：
+<code>{from_address}</code>
+---------------------------
+付款凭证：
+<a href='https://testnet.tonscan.org/tx/{pay_hash}'>{pay_hash}</a>
 """, parse_mode="HTML", disable_web_page_preview=True)
             
             #找到一个就可以了，然后跳出循坏
@@ -532,9 +520,10 @@ async def check_payment(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_name = update.message.from_user.first_name
+    chat_id = update.message.chat_id
     logging.info('%s启动了history函数', tg_name)
     # 下面检查这个用户最近最多5次的购买情况
-    check_history = f"select order_id,issue,luck_num,pay_amount,open_num,win,to_amount,to_address from orders where tg_name='{tg_name}' order by order_dt desc limit 5"
+    check_history = f"select order_id,issue,luck_num,pay_amount,open_num,win,to_amount,to_address from orders where chat_id='{chat_id}' order by order_dt desc limit 5"
     cur = db_conn.execute(check_history)
     rows = cur.fetchall()
     if len(rows) != 0:
@@ -545,15 +534,15 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if row[3] == None:  # row[3]付款金额
                 recent_order_msg += ", 未付款\n"
             if row[4] == None:  # row[4]，开奖数字
-                recent_order_msg += ", 未开奖"
+                recent_order_msg += "未开奖"
             else:
                 recent_order_msg += f"开奖结果:<b>{row[4]}</b>\n"
             if row[5]:
                 recent_order_msg += f"获奖金额:<b>{row[6]/1000000000}TON</b>"
                 if row[7] == None:  # row[7]兑奖地址
-                    recent_order_msg += ", 未兑奖"
+                    recent_order_msg += "未兑奖"
                 else:
-                    recent_order_msg += ", 已兑奖"
+                    recent_order_msg += "已兑奖"
             else:
                 if row[4] != None:
                     recent_order_msg += "未中奖"
@@ -561,17 +550,17 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             recent_order_msg += "\n------------------------------------------\n"
 
         # 下面检查共有多少金额没兑奖
-        bonus = float(0)
-        check_bonus = f"select sum(to_amount) from orders where tg_name='{tg_name}' and to_address is null"
-        cur = db_conn.execute(check_bonus)
-        rows = cur.fetchone()
-        if rows[0] != None:
-            bonus = float(rows[0])
-        if bonus != 0:
-            recent_order_msg += f"发现你有{bonus/1000000000} TON 的奖金没有领取。\n请输入兑奖地址：\n"
+        if chat_id not in prize:
+            check_bonus = f"select sum(to_amount) from orders where chat_id={chat_id} and to_address is null"
+            cur = db_conn.execute(check_bonus)
+            row = cur.fetchone()
+            bonus = int(row[0])
+            prize[chat_id]=row[0]
+        if prize[chat_id]>0:
+            recent_order_msg += f"发现你有{prize[chat_id]/1000000000} TON 的奖金没有领取。\n请输入兑奖地址：\n"
 
         await update.message.reply_text(recent_order_msg, parse_mode="HTML")
-        if bonus == 0:  # 如果没有奖金要发，发完消息就结束对话
+        if prize[chat_id] == 0:  # 如果没有奖金要发，发完消息就结束对话
             return ConversationHandler.END
         else:
             return 2
@@ -583,26 +572,26 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_name = update.message.from_user.first_name
     logging.info('%s用户启动了show_last函数', tg_name)
-    # 这里显示5个中奖的数据吧
-    get_all_last = f"select order_id,issue,open_index,open_num,tg_name,luck_num,pay_hash,win,to_amount,to_hash from orders where win is True order by order_id desc limit 5"
+    # 这里显示3个中奖的数据吧
+    get_all_last = f"select order_id,issue,open_index,open_num,tg_name,luck_num,pay_hash,win,to_amount,to_hash,to_address from orders where win is True order by order_id desc limit 3"
     cur = db_conn.execute(get_all_last)
     all_last = cur.fetchall()
-    msg = f"最近5个中奖情况公示如下：\n----------------------------------"
+    msg = f"最近3个中奖情况公示如下：\n----------------------------------"
     for last in all_last:
         msg += f"""
-订单编号: {last[0]}
 中奖期数：{last[1]}
 当日收盘：{last[2]} <b>[{last[3]}]</b>
-中奖用户: {last[4]}
 竞猜数字: {last[5]}
 竞猜凭证: <a href='https://testnet.tonscan.org/tx/{last[6]}'>{last[6]}</a>
-中奖等级：{level[last[7]]}
-获得奖金：{last[8]/1_000_000_000}TON\n"""
-        if last[9] != None:
-            msg += f"兑奖凭证: <a href='https://testnet.tonscan.org/tx/{last[9]}'>{last[9]}</a>"
+获得奖金：{last[8]/1_000_000_000}TON {[level[last[7]]]}\n"""
+        if last[9] is None and last[10] is None:
+            msg += "尚未兑奖"
         else:
-            msg += f"尚未兑奖"
-        msg += '\n------------------------------------\n'
+            if last[9] is not None:
+                msg += f"兑奖凭证: <a href='https://testnet.tonscan.org/tx/{last[9]}'>{last[9]}</a>"
+            else:
+                msg += f"兑奖地址: <a href='https://testnet.tonscan.org/address/{last[10]}'>{last[10]}</a>"
+        msg += '\n------------------------------------'
     await update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
     return
 
@@ -610,7 +599,7 @@ async def show_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pay_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     tg_name = update.message.from_user.first_name
-
+    chat_id = update.message.chat_id
     address_from_msg = update.message.text
 
     if address_from_msg == '/end':
@@ -628,20 +617,20 @@ async def pay_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return
     # 下面我们再来算一遍要给这个人多少钱
     # 下面检查共有多少金额没兑奖
-    bonus = float(0)
-    check_bonus = f"select sum(to_amount) from orders where tg_name='{tg_name}' and to_address is null"
-    cur = db_conn.execute(check_bonus)
-    rows = cur.fetchone()
-    if rows[0] != None:
-        bonus = float(rows[0])
-    if bonus ==0:
-        await update.message.reply_text("没有发现需要付款给你。请再确认一下。")
+    if chat_id not in prize:
+        return ConversationHandler.END
+    if prize[chat_id] == 0:
         return ConversationHandler.END
     
     # 证明真的要转钱给他
+    bonus = prize[chat_id]
     logging.info(f"算好了，要给这个人{bonus}")
-    raw_seqno = await client.generic_get_account_state(address_wallet)
-    seqno = raw_seqno['account_state']['seqno']
+    try:
+        raw_seqno = await client.raw_run_method(address=address_wallet, method='seqno', stack_data=[])
+        seqno = int(raw_seqno['stack'][0][1], 16)
+    except:
+        logging.info("没有拿到seqno，失败")
+        return
     # 生成一个唯一ID以供鉴别
     dt =datetime.now()
     pay_msg = "yangguangcai_prize_"+dt.strftime("%Y%m%d")
@@ -657,16 +646,18 @@ async def pay_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         logging.info("转账时出错了,%s", err)
         await update.message.reply_text("转账时出错了，你可以稍等后输入 /his 再试一下。")
         return ConversationHandler.END
-    
+    logging.info("转账完成了，下面写入数据库")
     #先把付款信息写进去，就算找不到hash也不至于出错
-    update_query=f"update orders set to_address='{to_address}',to_msg='{pay_msg}' where tg_name='{tg_name}' and win is True and to_address is NULL"
+    update_query=f"update orders set to_address='{to_address}',to_msg='{pay_msg}' where chat_id='{chat_id}' and win is True and to_address is NULL"
     db_conn.execute(update_query)
     db_conn.commit()
+    #把会话的待领取奖金清零
+    prize[chat_id]=0
     msg=f"""奖金已经发送成功！
 到账地址：<code>{to_address}</code>
 转账金额：{bonus/1_000_000_000}TON
 鉴别号码：{pay_msg}"""
-
+    logging.info("已经把地址存进去了，下面检查hash，最多10秒")
     #然后尝试找一下HASH，找不到就算了
     found = False
     for i in range(5):
@@ -675,10 +666,11 @@ async def pay_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         for tran in trans:
             if len(tran['out_msgs'])>0:
                 if tran['out_msgs'][0]['message'] == pay_msg:
+                    logging.info("找到对应记录了，现在将hash存入数据库")
                     found = True
                     to_hash = tran['transaction_id']['hash']
                     to_time = int(tran['utime'])
-                    update_query = f"update orders set to_hash='{to_hash}',to_time={to_time} where tg_name='{tg_name}' and win is True"
+                    update_query = f"update orders set to_hash='{to_hash}',to_time={to_time} where chat_id='{chat_id}' and win is True"
                     db_conn.execute(update_query)
                     db_conn.commit()
                     msg += f"\n转账凭证:<a href='https://testnet.tonscan.org/tx/{to_hash}'>{to_hash}</a>"
@@ -724,6 +716,11 @@ if __name__ == "__main__":
     )
     application = Application.builder().token(setting.TOKEN).build()
     application.add_handler(conv_handler)
+    job_queue = application.job_queue
+
+    # 添加一个定时任务
+    t = time(15,31,0, tzinfo=timezone("Asia/Shanghai"))
+    job = job_queue.run_daily(choose_winner, t, days=(1, 2, 3, 4, 5),name="check_index")
     # 下面开始接受用户会话
     application.run_polling(2)
     # 当结束时关闭tonclient的连接
